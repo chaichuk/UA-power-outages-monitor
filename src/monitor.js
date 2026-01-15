@@ -66,7 +66,7 @@ function getKyivDate(offsetDays = 0) {
 // Функція паузи
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// 1. ДТЕК (Playwright) - МАКСИМАЛЬНО НАДІЙНА ВЕРСІЯ
+// 1. ДТЕК (Playwright) - ВИПРАВЛЕНА ВЕРСІЯ
 async function getDtekRegionInfo(browser, config) {
   if (!config.city || !config.street || !config.house) {
     console.log(`ℹ️ Skipping DTEK ${config.id}: No address configured.`);
@@ -80,7 +80,6 @@ async function getDtekRegionInfo(browser, config) {
     try {
       console.log(`🌍 Visiting DTEK ${config.id} (Attempt ${attempt}/${MAX_RETRIES})...`);
 
-      // Створюємо контекст з реалістичним User-Agent
       const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'uk-UA'
@@ -91,43 +90,55 @@ async function getDtekRegionInfo(browser, config) {
       // Збільшуємо таймаут навігації до 60 сек
       await page.goto(config.url, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-      // ⚠️ ВАЖЛИВО: Чекаємо 5 секунд, щоб сайт встиг зробити всі редіректи/перезавантаження
+      // Чекаємо, щоб провантажилися скрипти і можливі поп-апи
       await sleep(5000);
 
-      // --- Перевірка на екстрені відключення (SMART GLOBAL CHECK) ---
+      // --- Перевірка на екстрені відключення (SMART GLOBAL CHECK v2) ---
       const isEmergency = await page.evaluate(() => {
         try {
+          // Збираємо текст з: 1) Стандартного банера 2) Модальних вікон (Bootstrap/Popups)
+          let fullText = "";
+
           const attentionBlock = document.querySelector('.m-attention__text');
-          if (!attentionBlock) return false;
-          const text = attentionBlock.innerText.toLowerCase();
+          if (attentionBlock) fullText += " " + attentionBlock.innerText;
+
+          // 🔥 ШУКАЄМО ТЕКСТ У МОДАЛКАХ (для Одеси та інших)
+          const modals = document.querySelectorAll('.modal-content, .popup-content, [role="dialog"], .modal-body');
+          modals.forEach(m => {
+             // Беремо текст, якщо елемент існує і хоч трохи схожий на видимий
+             if (m.innerText) fullText += " " + m.innerText;
+          });
+
+          const text = fullText.toLowerCase();
+
+          // Якщо тексту немає - все добре
+          if (!text.trim()) return false;
 
           // 1. Якщо написано "скасовано" або "відновлено" - це не аварія
           if (text.includes("скасовано") || text.includes("відновлено") || text.includes("повертаємось до графіків")) {
             return false;
           }
 
-          // 2. Чи є взагалі слова про відключення?
-          const hasKeywords = text.includes("екстрені") || text.includes("аварійні");
+          // 2. Чи є ключові слова? 
+          // Додано "обмеження" для кейсів типу "мережеві обмеження"
+          const hasKeywords = text.includes("екстрені") || text.includes("аварійні") || text.includes("обмеження");
           if (!hasKeywords) return false;
 
-          // 3. ФІЛЬТР: Чи це ГЛОБАЛЬНА аварія?
-          // Якщо є слово "Укренерго" - це майже завжди розпорядження на всю область/країну.
+          // 3. ФІЛЬТР: Глобально чи локально?
           if (text.includes("укренерго")) return true;
 
-          // Якщо згадуються локальні маркери - це ЛОКАЛЬНА аварія, ігноруємо її.
-          // (Якщо ДТЕК пише "в Бориспільському районі", "в частині громади" тощо)
+          // Перевірка локальних маркерів
           if (text.includes("районі") || text.includes("громаді") || text.includes("частині") || text.includes("населеному пункті")) {
-            // ⚠️ ВИНЯТОК: Якщо при цьому згадується саме обласний центр - це все ж таки важливо!
-            // Наприклад: "в Одеському районі, зокрема в Одесі"
+            // ВИНЯТОК: Якщо згадано обласний центр (наприклад, "в Одеському районі, зокрема в Одесі") - це важливо
             const mentionsMajorCity = text.includes("київ") || text.includes("києв") ||
               text.includes("одес") || text.includes("дніпр");
 
             if (!mentionsMajorCity) {
-              return false;
+              return false; // Це локальна аварія десь в селі, ігноруємо
             }
           }
 
-          // Якщо слів-маркерів локальності немає, а слова "екстрені/аварійні" є - вважаємо глобальною.
+          // Якщо слів-маркерів локальності немає, а тригери є - вважаємо глобальною
           return true;
         } catch (e) { return false; }
       }).catch(() => false);
@@ -136,7 +147,16 @@ async function getDtekRegionInfo(browser, config) {
         console.log(`⚠️ DETECTED GLOBAL EMERGENCY for ${config.id}`);
       }
 
-      // Чекаємо на CSRF токен (ознака того, що сторінка стабільна)
+      // Спроба закрити модалку, щоб вона не блокувала отримання токенів (опціонально)
+      try {
+        await page.evaluate(() => {
+            const closeBtn = document.querySelector('.modal .close, [data-dismiss="modal"], .btn-close');
+            if (closeBtn) closeBtn.click();
+        });
+        await sleep(1000);
+      } catch(e) {}
+
+      // Чекаємо на CSRF токен
       const csrfTokenTag = await page.waitForSelector('meta[name="csrf-token"]', { state: "attached", timeout: 15000 });
       const csrfToken = await csrfTokenTag.getAttribute("content");
 
@@ -164,19 +184,17 @@ async function getDtekRegionInfo(browser, config) {
         { city: config.city, street: config.street, house: config.house, csrfToken }
       );
 
-      await context.close(); // Закриваємо контекст чисто
+      await context.close();
       return { ...info, emergency: isEmergency };
 
     } catch (error) {
       console.warn(`⚠️ Error scraping DTEK ${config.id}: ${error.message}`);
-
       if (page) await page.close().catch(() => { });
 
       if (attempt === MAX_RETRIES) {
         console.error(`❌ Failed DTEK ${config.id} giving up.`);
         return null;
       }
-      // Чекаємо довше перед наступною спробою
       await sleep(5000 + (attempt * 2000));
     }
   }
@@ -241,7 +259,7 @@ function transformToSvitloFormat(dtekRaw) {
           case "no": val00 = 2; val30 = 2; break;
           case "first": val00 = 2; val30 = 1; break;
           case "second": val00 = 1; val30 = 2; break;
-          default: val00 = 1; val30 = 1;
+          case "default": val00 = 1; val30 = 1;
         }
         scheduleMap[groupKey][dateStr][`${hh}:00`] = val00;
         scheduleMap[groupKey][dateStr][`${hh}:30`] = val30;
@@ -303,7 +321,7 @@ function transformYasnoFormat(yasnoRaw) {
 
 // 4. ГОЛОВНИЙ ЗАПУСК
 async function run() {
-  console.log("🚀 Starting Multi-Region Scraper (Robust Mode)...");
+  console.log("🚀 Starting Multi-Region Scraper (Robust Mode with Odesa Fix)...");
 
   const browser = await chromium.launch({ headless: true });
   const processedRegions = [];
@@ -316,15 +334,12 @@ async function run() {
       const rawInfo = await getDtekRegionInfo(browser, config);
       if (rawInfo) {
         const cleanSchedule = transformToSvitloFormat(rawInfo);
-
-        // --- ⬇️ ОНОВЛЕНА ЛОГІКА ТУТ ⬇️ ---
         const hasSchedule = Object.keys(cleanSchedule).length > 0;
 
         // Додаємо регіон, якщо Є графік АБО Є аварійний режим
         if (hasSchedule || rawInfo.emergency) {
           console.log(`✅ Success DTEK: ${config.id} (Emergency: ${rawInfo.emergency})`);
 
-          // Оновлюємо дати тільки якщо є реальний графік
           if (hasSchedule) {
             updateGlobalDates(cleanSchedule, globalDates);
           }
@@ -334,13 +349,12 @@ async function run() {
             name_ua: config.name_ua,
             name_ru: config.name_ru,
             name_en: config.name_en,
-            schedule: cleanSchedule, // Може бути пустим {}, якщо emergency=true
+            schedule: cleanSchedule, 
             emergency: rawInfo.emergency || false
           });
         } else {
           console.log(`ℹ️ Skipping DTEK ${config.id}: No schedule and no emergency detected.`);
         }
-        // --- ⬆️ КІНЕЦЬ ЗМІН ⬆️ ---
       }
     }
   } catch (err) {
