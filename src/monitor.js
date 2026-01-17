@@ -228,6 +228,7 @@ async function getYasnoData(url, label) {
 
 // --- ТРАНСФОРМАЦІЇ ---
 
+// 🔥 ОНОВЛЕНА ЛОГІКА ДЛЯ ПОЛТАВИ ТА ІНШИХ JSON 🔥
 function transformToSvitloFormat(dtekRaw) {
   let daysData = null;
   if (dtekRaw?.data?.fact?.data) daysData = dtekRaw.data.fact.data;
@@ -248,21 +249,69 @@ function transformToSvitloFormat(dtekRaw) {
       if (!scheduleMap[groupKey]) scheduleMap[groupKey] = {};
       if (!scheduleMap[groupKey][dateStr]) scheduleMap[groupKey][dateStr] = {};
 
+      // Змінна для зберігання статусу ПОПЕРЕДНЬОЇ години
+      // За замовчуванням "yes", щоб не малювати відключення на 00:00 без причини
+      let prevStatus = "yes";
+
       for (let h = 1; h <= 24; h++) {
         const status = hours[h.toString()];
         const hourIndex = h - 1;
         const hh = String(hourIndex).padStart(2, "0");
 
-        let val00 = 1, val30 = 1;
+        let val00 = 1; // 1 = Є світло
+        let val30 = 1; // 1 = Є світло
+
         switch (status) {
-          case "yes": val00 = 1; val30 = 1; break;
-          case "no": val00 = 2; val30 = 2; break;
-          case "first": val00 = 2; val30 = 1; break;
-          case "second": val00 = 1; val30 = 2; break;
-          case "default": val00 = 1; val30 = 1;
+          case "yes": 
+            val00 = 1; val30 = 1; 
+            break;
+            
+          case "no": 
+            val00 = 2; val30 = 2; // 2 = Немає світла
+            break;
+            
+          // --- Точні відключення (без "m") - це точно НЕМАЄ ---
+          case "first": // Немає 00-30
+            val00 = 2; val30 = 1; 
+            break;
+            
+          case "second": // Немає 30-60
+            val00 = 1; val30 = 2; 
+            break;
+
+          // --- Сірі зони (з "m") - вважаємо, що світло Є (1) ---
+          
+          case "mfirst": 
+            // "Можливе 1-ша половина". Вважаємо як Є (1).
+            // Навіть якщо до цього було "no", mfirst означає початок слота зі світлом.
+            val00 = 1; val30 = 1; 
+            break;
+
+          case "msecond":
+            // "Можливе 2-га половина".
+            // Друга половина (30-60) - це сіра зона, тому вважаємо Є (1).
+            val30 = 1; 
+            
+            // Перша половина (00-30) залежить від попередньої години:
+            if (prevStatus === "no") {
+                // Якщо минула година була "чорна", то перші 30 хв поточної - 
+                // це гарантоване продовження відключення.
+                val00 = 2; 
+            } else {
+                // Інакше все ок, світло є.
+                val00 = 1;
+            }
+            break;
+
+          default:
+            val00 = 1; val30 = 1;
         }
+
         scheduleMap[groupKey][dateStr][`${hh}:00`] = val00;
         scheduleMap[groupKey][dateStr][`${hh}:30`] = val30;
+
+        // Оновлюємо статус для наступної ітерації
+        prevStatus = status;
       }
     }
   }
