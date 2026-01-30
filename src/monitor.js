@@ -478,8 +478,6 @@ async function run() {
     }
   } catch (err) {
     console.error("DTEK Critical Error:", err);
-  } catch (err) {
-    console.error("DTEK Critical Error:", err);
   }
 
   // 2. РЕГІОНИ З GITHUB (GENERIC)
