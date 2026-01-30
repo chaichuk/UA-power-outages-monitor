@@ -478,8 +478,8 @@ async function run() {
     }
   } catch (err) {
     console.error("DTEK Critical Error:", err);
-  } finally {
-    await browser.close();
+  } catch (err) {
+    console.error("DTEK Critical Error:", err);
   }
 
   // 2. РЕГІОНИ З GITHUB (GENERIC)
@@ -668,6 +668,8 @@ async function run() {
       emergency: false
     });
   }
+
+  await browser.close();
 
   // ВІДПРАВКА
   if (processedRegions.length === 0) {
