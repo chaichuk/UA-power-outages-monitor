@@ -1,5 +1,6 @@
 import { chromium } from "playwright"
 import path from "node:path"
+import fs from "node:fs"
 import {
   CITY_KYIV, STREET_KYIV, HOUSE_KYIV,
   CITY_ODESA, STREET_ODESA, HOUSE_ODESA,
@@ -19,7 +20,8 @@ import {
   ZHYTOMYR_JSON_URL,
   YASNO_KYIV_URL,
   YASNO_DNIPRO_DNEM_URL,
-  YASNO_DNIPRO_CEK_URL
+  YASNO_DNIPRO_CEK_URL,
+  CHERNIVTSI_URL
 } from "./constants.js"
 
 // --- КОНФІГУРАЦІЯ РЕГІОНІВ (ДТЕК - ОБЛАСТІ) ---
@@ -105,8 +107,8 @@ async function getDtekRegionInfo(browser, config) {
           // 🔥 ШУКАЄМО ТЕКСТ У МОДАЛКАХ (для Одеси та інших)
           const modals = document.querySelectorAll('.modal-content, .popup-content, [role="dialog"], .modal-body');
           modals.forEach(m => {
-             // Беремо текст, якщо елемент існує і хоч трохи схожий на видимий
-             if (m.innerText) fullText += " " + m.innerText;
+            // Беремо текст, якщо елемент існує і хоч трохи схожий на видимий
+            if (m.innerText) fullText += " " + m.innerText;
           });
 
           const text = fullText.toLowerCase();
@@ -150,11 +152,11 @@ async function getDtekRegionInfo(browser, config) {
       // Спроба закрити модалку, щоб вона не блокувала отримання токенів (опціонально)
       try {
         await page.evaluate(() => {
-            const closeBtn = document.querySelector('.modal .close, [data-dismiss="modal"], .btn-close');
-            if (closeBtn) closeBtn.click();
+          const closeBtn = document.querySelector('.modal .close, [data-dismiss="modal"], .btn-close');
+          if (closeBtn) closeBtn.click();
         });
         await sleep(1000);
-      } catch(e) {}
+      } catch (e) { }
 
       // Чекаємо на CSRF токен
       const csrfTokenTag = await page.waitForSelector('meta[name="csrf-token"]', { state: "attached", timeout: 15000 });
@@ -226,6 +228,125 @@ async function getYasnoData(url, label) {
   }
 }
 
+// 5. ЧЕРНІВЦІ (Playwright)
+async function getChernivtsiData(browser) {
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const page = await context.newPage();
+    try {
+      console.log(`🌍 Visiting Chernivtsi (Telegram) (Attempt ${attempt})...`);
+      await page.goto(CHERNIVTSI_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await sleep(3000);
+
+      const schedule = await page.evaluate(() => {
+        const posts = Array.from(document.querySelectorAll('.tgme_widget_message_wrap'));
+        // Reversing to find the latest relevant post first
+        const latestPost = posts.reverse().find(post => {
+          const text = post.innerText || "";
+          return text.includes("Орієнтовний графік заживлення") && text.includes("💡 Група");
+        });
+
+        if (!latestPost) return null;
+
+        const text = latestPost.innerText;
+
+        // Extract date: "30.01.2026"
+        const dateMatch = text.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+        if (!dateMatch) return null;
+        const dateStr = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`; // YYYY-MM-DD
+
+        const scheduleMap = {};
+
+        // Splitting by groups
+        // Example: "💡 Група 1"
+        const groupChunks = text.split("💡 Група");
+        // Skip the first chunk as it contains header info
+        for (let i = 1; i < groupChunks.length; i++) {
+          const chunk = groupChunks[i].trim();
+          const lines = chunk.split('\n').map(l => l.trim()).filter(Boolean);
+
+          // First line should be group number "1" or "1..."
+          // But sometimes it might be just "1" then new line.
+          // Let's simplified parse: parsing the number at the start.
+          const groupNumMatch = lines[0].match(/^(\d+)/);
+          if (!groupNumMatch) continue;
+
+          const groupKey = groupNumMatch[1];
+          // Remaining lines are time ranges or other text
+          const timeRanges = lines.slice(1);
+
+          if (!scheduleMap[groupKey]) scheduleMap[groupKey] = {};
+          if (!scheduleMap[groupKey][dateStr]) scheduleMap[groupKey][dateStr] = {};
+
+          // Default: Shutdown (2)
+          // We mark only ON intervals as (1)
+          const dailySchedule = {};
+          for (let h = 0; h < 24; h++) {
+            dailySchedule[`${String(h).padStart(2, '0')}:00`] = 2;
+            dailySchedule[`${String(h).padStart(2, '0')}:30`] = 2;
+          }
+
+          timeRanges.forEach(range => {
+            // "03:30 - 06:00"
+            // "з 23:00" => 23:00 - 24:00
+
+            let startH, startM, endH, endM;
+
+            if (range.toLowerCase().startsWith("з ")) {
+              const timeMatch = range.match(/(\d{2}):(\d{2})/);
+              if (timeMatch) {
+                startH = parseInt(timeMatch[1]);
+                startM = parseInt(timeMatch[2]);
+                endH = 24;
+                endM = 0;
+              }
+            } else {
+              const rangeMatch = range.match(/(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})/);
+              if (rangeMatch) {
+                startH = parseInt(rangeMatch[1]);
+                startM = parseInt(rangeMatch[2]);
+                endH = parseInt(rangeMatch[3]);
+                endM = parseInt(rangeMatch[4]);
+              }
+            }
+
+            if (startH !== undefined) {
+              // Convert to 30-min slots indices
+              const startIdx = startH * 2 + (startM === 30 ? 1 : 0);
+              const endIdx = endH * 2 + (endM === 30 ? 1 : 0);
+
+              for (let k = startIdx; k < endIdx; k++) {
+                if (k >= 48) break; // End of day
+                const h = Math.floor(k / 2);
+                const m = (k % 2 === 0) ? "00" : "30";
+                dailySchedule[`${String(h).padStart(2, '0')}:${m}`] = 1; // Light ON
+              }
+            }
+          });
+
+          scheduleMap[groupKey][dateStr] = dailySchedule;
+        }
+
+        return scheduleMap;
+      });
+
+      await context.close();
+      return schedule;
+
+    } catch (e) {
+      console.warn(`⚠️ Error scraping Chernivtsi (Telegram): ${e.message}`);
+      await context.close();
+      if (attempt === MAX_RETRIES) return null;
+      await sleep(3000);
+    }
+  }
+}
+// --- ТРАНСФОРМАЦІЇ ---
+
+
 // --- ТРАНСФОРМАЦІЇ ---
 
 // 🔥 ОНОВЛЕНА ЛОГІКА ДЛЯ ПОЛТАВИ ТА ІНШИХ JSON 🔥
@@ -262,44 +383,44 @@ function transformToSvitloFormat(dtekRaw) {
         let val30 = 1; // 1 = Є світло
 
         switch (status) {
-          case "yes": 
-            val00 = 1; val30 = 1; 
+          case "yes":
+            val00 = 1; val30 = 1;
             break;
-            
-          case "no": 
+
+          case "no":
             val00 = 2; val30 = 2; // 2 = Немає світла
             break;
-            
+
           // --- Точні відключення (без "m") - це точно НЕМАЄ ---
           case "first": // Немає 00-30
-            val00 = 2; val30 = 1; 
+            val00 = 2; val30 = 1;
             break;
-            
+
           case "second": // Немає 30-60
-            val00 = 1; val30 = 2; 
+            val00 = 1; val30 = 2;
             break;
 
           // --- Сірі зони (з "m") - вважаємо, що світло Є (1) ---
-          
-          case "mfirst": 
+
+          case "mfirst":
             // "Можливе 1-ша половина". Вважаємо як Є (1).
             // Навіть якщо до цього було "no", mfirst означає початок слота зі світлом.
-            val00 = 1; val30 = 1; 
+            val00 = 1; val30 = 1;
             break;
 
           case "msecond":
             // "Можливе 2-га половина".
             // Друга половина (30-60) - це сіра зона, тому вважаємо Є (1).
-            val30 = 1; 
-            
+            val30 = 1;
+
             // Перша половина (00-30) залежить від попередньої години:
             if (prevStatus === "no") {
-                // Якщо минула година була "чорна", то перші 30 хв поточної - 
-                // це гарантоване продовження відключення.
-                val00 = 2; 
+              // Якщо минула година була "чорна", то перші 30 хв поточної - 
+              // це гарантоване продовження відключення.
+              val00 = 2;
             } else {
-                // Інакше все ок, світло є.
-                val00 = 1;
+              // Інакше все ок, світло є.
+              val00 = 1;
             }
             break;
 
@@ -368,9 +489,91 @@ function transformYasnoFormat(yasnoRaw) {
   return { schedule: scheduleMap, emergency: isEmergency };
 }
 
+// --- ЕКСПОРТ ---
+function transformToExportFormat(schedule, regionId) {
+  const exportData = {
+    regionId: regionId,
+    lastUpdated: new Date().toISOString(),
+    fact: {
+      data: {}
+    }
+  };
+
+  const dates = new Set();
+
+  for (const [groupId, dateMap] of Object.entries(schedule)) {
+    for (const [dateStr, dailyMap] of Object.entries(dateMap)) {
+      // Parse date as Kyiv Midnight
+      // dateStr is YYYY-MM-DD
+      // Winter Time (Jan) is UTC+2. 
+      // Simple workaround: Create UTC date and substract 2 hours (7200s) if we assume strict winter time,
+      // OR better: use date string constructs that Date() accepts.
+      // "2026-01-30T00:00:00+02:00"
+      const ts = Math.floor(new Date(`${dateStr}T00:00:00+02:00`).getTime() / 1000);
+      const timestampKey = ts.toString();
+
+      if (!exportData.fact.data[timestampKey]) {
+        exportData.fact.data[timestampKey] = {};
+      }
+
+      const gpvKey = `GPV${groupId}`;
+      const hoursData = {};
+
+      for (let h = 1; h <= 24; h++) {
+        const hh = String(h - 1).padStart(2, '0');
+        const val00 = dailyMap[`${hh}:00`];
+        const val30 = dailyMap[`${hh}:30`];
+
+        let status = 'yes'; // Default ON
+        if (val00 === 1 && val30 === 1) status = 'yes';
+        else if (val00 === 2 && val30 === 2) status = 'no';
+        else if (val00 === 2 && val30 === 1) status = 'first'; // OFF first half = first half is 'shutdown' -> wait.
+        // User mappings:
+        // "first": 00-30 OFF (2), 30-00 ON (1) -> "first" status usually means "first half off" or "first half something".
+        // Let's check user example:
+        // "GPV2.1" "1": "first" => Val00=?, Val30=? 
+        // In example GPV2.1 hour 1 is 'first'.
+        // Let's see transformToSvitloFormat logic (reverse):
+        // case "first": val00 = 2; val30 = 1; (OFF, ON)
+        // So 'first' maps to [2, 1]
+        // case "second": val00 = 1; val30 = 2; (ON, OFF)
+
+        if (val00 === 2 && val30 === 1) status = 'first';
+        else if (val00 === 1 && val30 === 2) status = 'second';
+
+        hoursData[h.toString()] = status;
+      }
+
+      exportData.fact.data[timestampKey][gpvKey] = hoursData;
+    }
+  }
+
+  // Fill summary
+  const keys = Object.keys(exportData.fact.data).sort();
+  if (keys.length > 0) {
+    exportData.fact.today = parseInt(keys[0]);
+
+    const now = new Date();
+    now.setHours(now.getHours() + 2); // Quick hack for Kyiv approx if env is UTC, or just use local
+    // Actually user wanted "30.01.2026 00:02" format.
+    // Let's just formatting current time.
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    exportData.fact.update = `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  return exportData;
+}
+
 // 4. ГОЛОВНИЙ ЗАПУСК
 async function run() {
   console.log("🚀 Starting Multi-Region Scraper (Robust Mode with Odesa Fix)...");
+
+  // Ensure artifacts directory exists
+  const artifactsDir = path.resolve("artifacts");
+  if (!fs.existsSync(artifactsDir)) {
+    fs.mkdirSync(artifactsDir);
+  }
 
   const browser = await chromium.launch({ headless: true });
   const processedRegions = [];
@@ -398,7 +601,7 @@ async function run() {
             name_ua: config.name_ua,
             name_ru: config.name_ru,
             name_en: config.name_en,
-            schedule: cleanSchedule, 
+            schedule: cleanSchedule,
             emergency: rawInfo.emergency || false
           });
         } else {
@@ -408,8 +611,6 @@ async function run() {
     }
   } catch (err) {
     console.error("DTEK Critical Error:", err);
-  } finally {
-    await browser.close();
   }
 
   // 2. РЕГІОНИ З GITHUB (GENERIC)
@@ -584,6 +785,32 @@ async function run() {
     }
   }
 
+  // 7. ЧЕРНІВЦІ
+  const chernivtsiSchedule = await getChernivtsiData(browser);
+  if (chernivtsiSchedule && Object.keys(chernivtsiSchedule).length > 0) {
+    console.log(`✅ Success Chernivtsi`);
+    updateGlobalDates(chernivtsiSchedule, globalDates);
+    processedRegions.push({
+      cpu: "chernivetska-oblast",
+      name_ua: "Чернівецька",
+      name_ru: "Черновицкая",
+      name_en: "Chernivtsi",
+      schedule: chernivtsiSchedule,
+      emergency: false
+    });
+
+    // Save to JSON for repo
+    try {
+      const exportData = transformToExportFormat(chernivtsiSchedule, "Chernivtsi");
+      fs.writeFileSync(path.join(artifactsDir, "chernivtsi.json"), JSON.stringify(exportData, null, 2));
+      console.log("💾 Saved artifacts/chernivtsi.json");
+    } catch (e) {
+      console.error("❌ Failed to save artifacts/chernivtsi.json:", e);
+    }
+  }
+
+  await browser.close();
+
   // ВІДПРАВКА
   if (processedRegions.length === 0) {
     console.error("❌ No data collected.");
@@ -601,6 +828,14 @@ async function run() {
     }),
     timestamp: Date.now()
   };
+
+  // Save last-message.json for repo
+  try {
+    fs.writeFileSync(path.join(artifactsDir, "last-message.json"), JSON.stringify(JSON.parse(finalOutput.body), null, 2));
+    console.log("💾 Saved artifacts/last-message.json");
+  } catch (e) {
+    console.error("❌ Failed to save artifacts/last-message.json:", e);
+  }
 
   if (!CF_WORKER_URL || !CF_WORKER_TOKEN) {
     console.error("❌ Missing Cloudflare secrets!");

@@ -60,7 +60,7 @@ jobs:
           git config user.email "github-actions@github.com"
 
           # Додаємо наш новий файл
-          git add dtek.json
+          git add dtek.json artifacts/
 
           # Перевіряємо, чи є зміни, щоб не робити пустих комітів
           if ! git diff --cached --quiet; then
