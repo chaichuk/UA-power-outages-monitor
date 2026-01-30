@@ -236,63 +236,170 @@ async function getChernivtsiData(browser) {
     });
     const page = await context.newPage();
     try {
-      console.log(`🌍 Visiting Chernivtsi (Attempt ${attempt})...`);
+      console.log(`🌍 Visiting Chernivtsi (Telegram) (Attempt ${attempt})...`);
       await page.goto(CHERNIVTSI_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await sleep(5000);
+      await sleep(3000);
 
       const schedule = await page.evaluate(() => {
-        const dateEl = document.querySelector('#gsv_t b');
-        if (!dateEl) return null;
+        const posts = Array.from(document.querySelectorAll('.tgme_widget_message_wrap'));
+        // Reversing to find the latest relevant post first
+        const latestPost = posts.reverse().find(post => {
+          const text = post.innerText || "";
+          return text.includes("Орієнтовний графік заживлення") && text.includes("💡 Група");
+        });
 
-        // Format: 30.01.2026
-        const dateParts = dateEl.innerText.trim().split('.');
-        if (dateParts.length !== 3) return null;
-        const dateStr = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`; // 2026-01-30
+        if (!latestPost) return null;
 
-        const rows = document.querySelectorAll('#gsv .scrollable div[id^="inf"]');
-        const map = {};
+        const text = latestPost.innerText;
 
-        rows.forEach(row => {
-          const queueId = row.getAttribute('data-id');
-          if (!queueId) return;
+        // Extract date: "30.01.2026"
+        const dateMatch = text.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+        if (!dateMatch) return null;
+        const dateStr = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`; // YYYY-MM-DD
 
-          // Checking for the active container inside the row
-          const cellContainer = row.querySelector('o.active');
-          if (!cellContainer) return;
+        const scheduleMap = {};
 
-          const cells = Array.from(cellContainer.children);
-          if (cells.length < 48) return; // Expecting at least 48 slots
+        // Splitting by groups
+        // Example: "💡 Група 1"
+        const groupChunks = text.split("💡 Група");
+        // Skip the first chunk as it contains header info
+        for (let i = 1; i < groupChunks.length; i++) {
+          const chunk = groupChunks[i].trim();
+          const lines = chunk.split('\n').map(l => l.trim()).filter(Boolean);
 
+          // First line should be group number "1" or "1..."
+          // But sometimes it might be just "1" then new line.
+          // Let's simplified parse: parsing the number at the start.
+          const groupNumMatch = lines[0].match(/^(\d+)/);
+          if (!groupNumMatch) continue;
+
+          const groupKey = groupNumMatch[1];
+          // Remaining lines are time ranges or other text
+          const timeRanges = lines.slice(1);
+
+          if (!scheduleMap[groupKey]) scheduleMap[groupKey] = {};
+          if (!scheduleMap[groupKey][dateStr]) scheduleMap[groupKey][dateStr] = {};
+
+          // Default: Shutdown (2)
+          // We mark only ON intervals as (1)
           const dailySchedule = {};
-          cells.forEach((cell, i) => {
-            if (i >= 48) return;
-            const hour = Math.floor(i / 2);
-            const min = (i % 2 === 0) ? "00" : "30";
-            const timeKey = `${String(hour).padStart(2, '0')}:${min}`;
+          for (let h = 0; h < 24; h++) {
+            dailySchedule[`${String(h).padStart(2, '0')}:00`] = 2;
+            dailySchedule[`${String(h).padStart(2, '0')}:30`] = 2;
+          }
 
-            const txt = cell.innerText.trim();
-            // В = Відключено (2), МЗ = Можливо заживлено -> Відключено (2), З = Заживлено (1)
-            let status = 1;
-            if (txt === 'В' || txt === 'МЗ') status = 2;
+          timeRanges.forEach(range => {
+            // "03:30 - 06:00"
+            // "з 23:00" => 23:00 - 24:00
 
-            dailySchedule[timeKey] = status;
+            let startH, startM, endH, endM;
+
+            if (range.toLowerCase().startsWith("з ")) {
+              const timeMatch = range.match(/(\d{2}):(\d{2})/);
+              if (timeMatch) {
+                startH = parseInt(timeMatch[1]);
+                startM = parseInt(timeMatch[2]);
+                endH = 24;
+                endM = 0;
+              }
+            } else {
+              const rangeMatch = range.match(/(\d{2}):(\d{2})\s*-\s*(\d{2}):(\d{2})/);
+              if (rangeMatch) {
+                startH = parseInt(rangeMatch[1]);
+                startM = parseInt(rangeMatch[2]);
+                endH = parseInt(rangeMatch[3]);
+                endM = parseInt(rangeMatch[4]);
+              }
+            }
+
+            if (startH !== undefined) {
+              // Convert to 30-min slots indices
+              const startIdx = startH * 2 + (startM === 30 ? 1 : 0);
+              const endIdx = endH * 2 + (endM === 30 ? 1 : 0);
+
+              for (let k = startIdx; k < endIdx; k++) {
+                if (k >= 48) break; // End of day
+                const h = Math.floor(k / 2);
+                const m = (k % 2 === 0) ? "00" : "30";
+                dailySchedule[`${String(h).padStart(2, '0')}:${m}`] = 1; // Light ON
+              }
+            }
           });
 
-          if (!map[queueId]) map[queueId] = {};
-          map[queueId][dateStr] = dailySchedule;
-        });
-        return map;
+          scheduleMap[groupKey][dateStr] = dailySchedule;
+        }
+
+        return scheduleMap;
       });
 
       await context.close();
       return schedule;
 
     } catch (e) {
-      console.warn(`⚠️ Error scraping Chernivtsi: ${e.message}`);
+      console.warn(`⚠️ Error scraping Chernivtsi (Telegram): ${e.message}`);
       await context.close();
       if (attempt === MAX_RETRIES) return null;
       await sleep(3000);
     }
+  }
+}
+// --- ТРАНСФОРМАЦІЇ ---
+function transformToSvitloFormat(dtekRaw) {
+  await sleep(5000);
+
+  const schedule = await page.evaluate(() => {
+    const dateEl = document.querySelector('#gsv_t b');
+    if (!dateEl) return null;
+
+    // Format: 30.01.2026
+    const dateParts = dateEl.innerText.trim().split('.');
+    if (dateParts.length !== 3) return null;
+    const dateStr = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`; // 2026-01-30
+
+    const rows = document.querySelectorAll('#gsv .scrollable div[id^="inf"]');
+    const map = {};
+
+    rows.forEach(row => {
+      const queueId = row.getAttribute('data-id');
+      if (!queueId) return;
+
+      // Checking for the active container inside the row
+      const cellContainer = row.querySelector('o.active');
+      if (!cellContainer) return;
+
+      const cells = Array.from(cellContainer.children);
+      if (cells.length < 48) return; // Expecting at least 48 slots
+
+      const dailySchedule = {};
+      cells.forEach((cell, i) => {
+        if (i >= 48) return;
+        const hour = Math.floor(i / 2);
+        const min = (i % 2 === 0) ? "00" : "30";
+        const timeKey = `${String(hour).padStart(2, '0')}:${min}`;
+
+        const txt = cell.innerText.trim();
+        // В = Відключено (2), МЗ = Можливо заживлено -> Відключено (2), З = Заживлено (1)
+        let status = 1;
+        if (txt === 'В' || txt === 'МЗ') status = 2;
+
+        dailySchedule[timeKey] = status;
+      });
+
+      if (!map[queueId]) map[queueId] = {};
+      map[queueId][dateStr] = dailySchedule;
+    });
+    return map;
+  });
+
+  await context.close();
+  return schedule;
+
+} catch (e) {
+  console.warn(`⚠️ Error scraping Chernivtsi: ${e.message}`);
+  await context.close();
+  if (attempt === MAX_RETRIES) return null;
+  await sleep(3000);
+}
   }
 }
 
