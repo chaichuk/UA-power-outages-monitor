@@ -1,5 +1,6 @@
 import { chromium } from "playwright"
 import path from "node:path"
+import fs from "node:fs"
 import {
   CITY_KYIV, STREET_KYIV, HOUSE_KYIV,
   CITY_ODESA, STREET_ODESA, HOUSE_ODESA,
@@ -488,9 +489,91 @@ function transformYasnoFormat(yasnoRaw) {
   return { schedule: scheduleMap, emergency: isEmergency };
 }
 
+// --- ЕКСПОРТ ---
+function transformToExportFormat(schedule, regionId) {
+  const exportData = {
+    regionId: regionId,
+    lastUpdated: new Date().toISOString(),
+    fact: {
+      data: {}
+    }
+  };
+
+  const dates = new Set();
+
+  for (const [groupId, dateMap] of Object.entries(schedule)) {
+    for (const [dateStr, dailyMap] of Object.entries(dateMap)) {
+      // Parse date as Kyiv Midnight
+      // dateStr is YYYY-MM-DD
+      // Winter Time (Jan) is UTC+2. 
+      // Simple workaround: Create UTC date and substract 2 hours (7200s) if we assume strict winter time,
+      // OR better: use date string constructs that Date() accepts.
+      // "2026-01-30T00:00:00+02:00"
+      const ts = Math.floor(new Date(`${dateStr}T00:00:00+02:00`).getTime() / 1000);
+      const timestampKey = ts.toString();
+
+      if (!exportData.fact.data[timestampKey]) {
+        exportData.fact.data[timestampKey] = {};
+      }
+
+      const gpvKey = `GPV${groupId}`;
+      const hoursData = {};
+
+      for (let h = 1; h <= 24; h++) {
+        const hh = String(h - 1).padStart(2, '0');
+        const val00 = dailyMap[`${hh}:00`];
+        const val30 = dailyMap[`${hh}:30`];
+
+        let status = 'yes'; // Default ON
+        if (val00 === 1 && val30 === 1) status = 'yes';
+        else if (val00 === 2 && val30 === 2) status = 'no';
+        else if (val00 === 2 && val30 === 1) status = 'first'; // OFF first half = first half is 'shutdown' -> wait.
+        // User mappings:
+        // "first": 00-30 OFF (2), 30-00 ON (1) -> "first" status usually means "first half off" or "first half something".
+        // Let's check user example:
+        // "GPV2.1" "1": "first" => Val00=?, Val30=? 
+        // In example GPV2.1 hour 1 is 'first'.
+        // Let's see transformToSvitloFormat logic (reverse):
+        // case "first": val00 = 2; val30 = 1; (OFF, ON)
+        // So 'first' maps to [2, 1]
+        // case "second": val00 = 1; val30 = 2; (ON, OFF)
+
+        if (val00 === 2 && val30 === 1) status = 'first';
+        else if (val00 === 1 && val30 === 2) status = 'second';
+
+        hoursData[h.toString()] = status;
+      }
+
+      exportData.fact.data[timestampKey][gpvKey] = hoursData;
+    }
+  }
+
+  // Fill summary
+  const keys = Object.keys(exportData.fact.data).sort();
+  if (keys.length > 0) {
+    exportData.fact.today = parseInt(keys[0]);
+
+    const now = new Date();
+    now.setHours(now.getHours() + 2); // Quick hack for Kyiv approx if env is UTC, or just use local
+    // Actually user wanted "30.01.2026 00:02" format.
+    // Let's just formatting current time.
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    exportData.fact.update = `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  return exportData;
+}
+
 // 4. ГОЛОВНИЙ ЗАПУСК
 async function run() {
   console.log("🚀 Starting Multi-Region Scraper (Robust Mode with Odesa Fix)...");
+
+  // Ensure artifacts directory exists
+  const artifactsDir = path.resolve("artifacts");
+  if (!fs.existsSync(artifactsDir)) {
+    fs.mkdirSync(artifactsDir);
+  }
 
   const browser = await chromium.launch({ headless: true });
   const processedRegions = [];
@@ -715,6 +798,15 @@ async function run() {
       schedule: chernivtsiSchedule,
       emergency: false
     });
+
+    // Save to JSON for repo
+    try {
+      const exportData = transformToExportFormat(chernivtsiSchedule, "Chernivtsi");
+      fs.writeFileSync(path.join(artifactsDir, "chernivtsi.json"), JSON.stringify(exportData, null, 2));
+      console.log("💾 Saved artifacts/chernivtsi.json");
+    } catch (e) {
+      console.error("❌ Failed to save artifacts/chernivtsi.json:", e);
+    }
   }
 
   await browser.close();
@@ -736,6 +828,14 @@ async function run() {
     }),
     timestamp: Date.now()
   };
+
+  // Save last-message.json for repo
+  try {
+    fs.writeFileSync(path.join(artifactsDir, "last-message.json"), JSON.stringify(JSON.parse(finalOutput.body), null, 2));
+    console.log("💾 Saved artifacts/last-message.json");
+  } catch (e) {
+    console.error("❌ Failed to save artifacts/last-message.json:", e);
+  }
 
   if (!CF_WORKER_URL || !CF_WORKER_TOKEN) {
     console.error("❌ Missing Cloudflare secrets!");
