@@ -19,7 +19,8 @@ import {
   ZHYTOMYR_JSON_URL,
   YASNO_KYIV_URL,
   YASNO_DNIPRO_DNEM_URL,
-  YASNO_DNIPRO_CEK_URL
+  YASNO_DNIPRO_CEK_URL,
+  CHERNIVTSI_URL
 } from "./constants.js"
 
 // --- КОНФІГУРАЦІЯ РЕГІОНІВ (ДТЕК - ОБЛАСТІ) ---
@@ -105,8 +106,8 @@ async function getDtekRegionInfo(browser, config) {
           // 🔥 ШУКАЄМО ТЕКСТ У МОДАЛКАХ (для Одеси та інших)
           const modals = document.querySelectorAll('.modal-content, .popup-content, [role="dialog"], .modal-body');
           modals.forEach(m => {
-             // Беремо текст, якщо елемент існує і хоч трохи схожий на видимий
-             if (m.innerText) fullText += " " + m.innerText;
+            // Беремо текст, якщо елемент існує і хоч трохи схожий на видимий
+            if (m.innerText) fullText += " " + m.innerText;
           });
 
           const text = fullText.toLowerCase();
@@ -150,11 +151,11 @@ async function getDtekRegionInfo(browser, config) {
       // Спроба закрити модалку, щоб вона не блокувала отримання токенів (опціонально)
       try {
         await page.evaluate(() => {
-            const closeBtn = document.querySelector('.modal .close, [data-dismiss="modal"], .btn-close');
-            if (closeBtn) closeBtn.click();
+          const closeBtn = document.querySelector('.modal .close, [data-dismiss="modal"], .btn-close');
+          if (closeBtn) closeBtn.click();
         });
         await sleep(1000);
-      } catch(e) {}
+      } catch (e) { }
 
       // Чекаємо на CSRF токен
       const csrfTokenTag = await page.waitForSelector('meta[name="csrf-token"]', { state: "attached", timeout: 15000 });
@@ -226,6 +227,75 @@ async function getYasnoData(url, label) {
   }
 }
 
+// 5. ЧЕРНІВЦІ (Playwright)
+async function getChernivtsiData(browser) {
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const page = await context.newPage();
+    try {
+      console.log(`🌍 Visiting Chernivtsi (Attempt ${attempt})...`);
+      await page.goto(CHERNIVTSI_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await sleep(5000);
+
+      const schedule = await page.evaluate(() => {
+        const dateEl = document.querySelector('#gsv_t b');
+        if (!dateEl) return null;
+
+        // Format: 30.01.2026
+        const dateParts = dateEl.innerText.trim().split('.');
+        if (dateParts.length !== 3) return null;
+        const dateStr = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`; // 2026-01-30
+
+        const rows = document.querySelectorAll('#gsv .scrollable div[id^="inf"]');
+        const map = {};
+
+        rows.forEach(row => {
+          const queueId = row.getAttribute('data-id');
+          if (!queueId) return;
+
+          // Checking for the active container inside the row
+          const cellContainer = row.querySelector('o.active');
+          if (!cellContainer) return;
+
+          const cells = Array.from(cellContainer.children);
+          if (cells.length < 48) return; // Expecting at least 48 slots
+
+          const dailySchedule = {};
+          cells.forEach((cell, i) => {
+            if (i >= 48) return;
+            const hour = Math.floor(i / 2);
+            const min = (i % 2 === 0) ? "00" : "30";
+            const timeKey = `${String(hour).padStart(2, '0')}:${min}`;
+
+            const txt = cell.innerText.trim();
+            // В = Відключено (2), МЗ = Можливо заживлено -> Відключено (2), З = Заживлено (1)
+            let status = 1;
+            if (txt === 'В' || txt === 'МЗ') status = 2;
+
+            dailySchedule[timeKey] = status;
+          });
+
+          if (!map[queueId]) map[queueId] = {};
+          map[queueId][dateStr] = dailySchedule;
+        });
+        return map;
+      });
+
+      await context.close();
+      return schedule;
+
+    } catch (e) {
+      console.warn(`⚠️ Error scraping Chernivtsi: ${e.message}`);
+      await context.close();
+      if (attempt === MAX_RETRIES) return null;
+      await sleep(3000);
+    }
+  }
+}
+
 // --- ТРАНСФОРМАЦІЇ ---
 
 // 🔥 ОНОВЛЕНА ЛОГІКА ДЛЯ ПОЛТАВИ ТА ІНШИХ JSON 🔥
@@ -262,44 +332,44 @@ function transformToSvitloFormat(dtekRaw) {
         let val30 = 1; // 1 = Є світло
 
         switch (status) {
-          case "yes": 
-            val00 = 1; val30 = 1; 
+          case "yes":
+            val00 = 1; val30 = 1;
             break;
-            
-          case "no": 
+
+          case "no":
             val00 = 2; val30 = 2; // 2 = Немає світла
             break;
-            
+
           // --- Точні відключення (без "m") - це точно НЕМАЄ ---
           case "first": // Немає 00-30
-            val00 = 2; val30 = 1; 
+            val00 = 2; val30 = 1;
             break;
-            
+
           case "second": // Немає 30-60
-            val00 = 1; val30 = 2; 
+            val00 = 1; val30 = 2;
             break;
 
           // --- Сірі зони (з "m") - вважаємо, що світло Є (1) ---
-          
-          case "mfirst": 
+
+          case "mfirst":
             // "Можливе 1-ша половина". Вважаємо як Є (1).
             // Навіть якщо до цього було "no", mfirst означає початок слота зі світлом.
-            val00 = 1; val30 = 1; 
+            val00 = 1; val30 = 1;
             break;
 
           case "msecond":
             // "Можливе 2-га половина".
             // Друга половина (30-60) - це сіра зона, тому вважаємо Є (1).
-            val30 = 1; 
-            
+            val30 = 1;
+
             // Перша половина (00-30) залежить від попередньої години:
             if (prevStatus === "no") {
-                // Якщо минула година була "чорна", то перші 30 хв поточної - 
-                // це гарантоване продовження відключення.
-                val00 = 2; 
+              // Якщо минула година була "чорна", то перші 30 хв поточної - 
+              // це гарантоване продовження відключення.
+              val00 = 2;
             } else {
-                // Інакше все ок, світло є.
-                val00 = 1;
+              // Інакше все ок, світло є.
+              val00 = 1;
             }
             break;
 
@@ -398,7 +468,7 @@ async function run() {
             name_ua: config.name_ua,
             name_ru: config.name_ru,
             name_en: config.name_en,
-            schedule: cleanSchedule, 
+            schedule: cleanSchedule,
             emergency: rawInfo.emergency || false
           });
         } else {
@@ -582,6 +652,21 @@ async function run() {
         emergency: emergency
       });
     }
+  }
+
+  // 7. ЧЕРНІВЦІ
+  const chernivtsiSchedule = await getChernivtsiData(browser);
+  if (chernivtsiSchedule && Object.keys(chernivtsiSchedule).length > 0) {
+    console.log(`✅ Success Chernivtsi`);
+    updateGlobalDates(chernivtsiSchedule, globalDates);
+    processedRegions.push({
+      cpu: "chernivetska-oblast",
+      name_ua: "Чернівецька",
+      name_ru: "Черновицкая",
+      name_en: "Chernivtsi",
+      schedule: chernivtsiSchedule,
+      emergency: false
+    });
   }
 
   // ВІДПРАВКА

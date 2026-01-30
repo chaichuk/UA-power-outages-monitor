@@ -27,6 +27,7 @@ export const TERNOPIL_JSON_URL = "https://raw.githubusercontent.com/yaroslav2901
 export const ZAKARPATTIA_JSON_URL = "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zakarpattiaoblenerho.json"
 export const ZAPORIZHZHIA_JSON_URL = "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zaporizhzhiaoblenergo.json"
 export const ZHYTOMYR_JSON_URL = "https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data/Zhytomyroblenergo.json"
+export const CHERNIVTSI_URL = "https://oblenergo.cv.ua/shutdowns/"
 export const YASNO_KYIV_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/25/dsos/902/planned-outages"
 export const YASNO_DNIPRO_DNEM_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/3/dsos/301/planned-outages"
 export const YASNO_DNIPRO_CEK_URL = "https://app.yasno.ua/api/blackout-service/public/shutdowns/regions/3/dsos/303/planned-outages"
