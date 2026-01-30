@@ -344,64 +344,7 @@ async function getChernivtsiData(browser) {
   }
 }
 // --- ТРАНСФОРМАЦІЇ ---
-function transformToSvitloFormat(dtekRaw) {
-  await sleep(5000);
 
-  const schedule = await page.evaluate(() => {
-    const dateEl = document.querySelector('#gsv_t b');
-    if (!dateEl) return null;
-
-    // Format: 30.01.2026
-    const dateParts = dateEl.innerText.trim().split('.');
-    if (dateParts.length !== 3) return null;
-    const dateStr = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`; // 2026-01-30
-
-    const rows = document.querySelectorAll('#gsv .scrollable div[id^="inf"]');
-    const map = {};
-
-    rows.forEach(row => {
-      const queueId = row.getAttribute('data-id');
-      if (!queueId) return;
-
-      // Checking for the active container inside the row
-      const cellContainer = row.querySelector('o.active');
-      if (!cellContainer) return;
-
-      const cells = Array.from(cellContainer.children);
-      if (cells.length < 48) return; // Expecting at least 48 slots
-
-      const dailySchedule = {};
-      cells.forEach((cell, i) => {
-        if (i >= 48) return;
-        const hour = Math.floor(i / 2);
-        const min = (i % 2 === 0) ? "00" : "30";
-        const timeKey = `${String(hour).padStart(2, '0')}:${min}`;
-
-        const txt = cell.innerText.trim();
-        // В = Відключено (2), МЗ = Можливо заживлено -> Відключено (2), З = Заживлено (1)
-        let status = 1;
-        if (txt === 'В' || txt === 'МЗ') status = 2;
-
-        dailySchedule[timeKey] = status;
-      });
-
-      if (!map[queueId]) map[queueId] = {};
-      map[queueId][dateStr] = dailySchedule;
-    });
-    return map;
-  });
-
-  await context.close();
-  return schedule;
-
-} catch (e) {
-  console.warn(`⚠️ Error scraping Chernivtsi: ${e.message}`);
-  await context.close();
-  if (attempt === MAX_RETRIES) return null;
-  await sleep(3000);
-}
-  }
-}
 
 // --- ТРАНСФОРМАЦІЇ ---
 
