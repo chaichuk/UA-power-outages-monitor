@@ -2466,7 +2466,7 @@
           }
         }
       },
-      "emergency": true
+      "emergency": false
     },
     {
       "cpu": "dnipropetrovska-oblast",
@@ -3699,7 +3699,7 @@
           }
         }
       },
-      "emergency": true
+      "emergency": false
     },
     {
       "cpu": "lvivska-oblast",
