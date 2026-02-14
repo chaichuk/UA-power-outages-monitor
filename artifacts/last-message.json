@@ -3099,7 +3099,7 @@
           }
         }
       },
-      "emergency": true
+      "emergency": false
     },
     {
       "cpu": "lvivska-oblast",
