@@ -1233,7 +1233,7 @@
           }
         }
       },
-      "emergency": true
+      "emergency": false
     },
     {
       "cpu": "odeska-oblast",
