@@ -3,6 +3,14 @@
   "date_tomorrow": "2026-05-16",
   "regions": [
     {
+      "cpu": "odeska-oblast",
+      "name_ua": "Одеська область",
+      "name_ru": "Одесская область",
+      "name_en": "Odesa Region",
+      "schedule": {},
+      "emergency": true
+    },
+    {
       "cpu": "lvivska-oblast",
       "name_ua": "Львівська область",
       "name_ru": "Львовская область",
