@@ -11,14 +11,6 @@
       "emergency": true
     },
     {
-      "cpu": "dnipropetrovska-oblast",
-      "name_ua": "Дніпропетровська область",
-      "name_ru": "Днепропетровская область",
-      "name_en": "Dnipropetrovsk Region",
-      "schedule": {},
-      "emergency": true
-    },
-    {
       "cpu": "lvivska-oblast",
       "name_ua": "Львівська область",
       "name_ru": "Львовская область",
