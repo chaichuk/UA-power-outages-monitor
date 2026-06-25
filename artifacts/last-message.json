@@ -6573,7 +6573,7 @@
         "59.1": {},
         "60.1": {}
       },
-      "emergency": false
+      "emergency": true
     },
     {
       "cpu": "dnipro-dnem",
