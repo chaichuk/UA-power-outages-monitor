@@ -63,14 +63,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Rebase in case any concurrent commit landed
-          git pull --rebase origin main || true
-
           git add dtek.json artifacts/
 
           if ! git diff --cached --quiet; then
             git commit -m "failover: cloud backup update [skip ci]"
-            git push origin HEAD:main
+            # Rebase after commit to smoothly incorporate concurrent commits
+            git pull --rebase origin ${{ github.ref_name }} || true
+            git push origin HEAD:${{ github.ref_name }}
           else
             echo "No changes to commit"
           fi
