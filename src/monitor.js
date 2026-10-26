@@ -838,25 +838,23 @@ async function run() {
   }
 
   if (!CF_WORKER_URL || !CF_WORKER_TOKEN) {
-    console.error("❌ Missing Cloudflare secrets!");
-    process.exit(1);
-  }
-
-  console.log(`📤 Sending ${processedRegions.length} regions to Cloudflare...`);
-  try {
-    const response = await fetch(CF_WORKER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${CF_WORKER_TOKEN}`
-      },
-      body: JSON.stringify(finalOutput)
-    });
-    if (!response.ok) throw new Error(await response.text());
-    console.log(`✅ Success!`);
-  } catch (err) {
-    console.error("❌ Send Error:", err.message);
-    process.exit(1);
+    console.warn("⚠️ Cloudflare credentials missing, skipping worker upload.");
+  } else {
+    console.log(`📤 Sending ${processedRegions.length} regions to Cloudflare...`);
+    try {
+      const response = await fetch(CF_WORKER_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${CF_WORKER_TOKEN}`
+        },
+        body: JSON.stringify(finalOutput)
+      });
+      if (!response.ok) throw new Error(await response.text());
+      console.log(`✅ Success!`);
+    } catch (err) {
+      console.error("❌ Send Error:", err.message);
+    }
   }
 }
 
