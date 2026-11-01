@@ -350,7 +350,7 @@ async function getChernivtsiData(browser) {
 // --- ТРАНСФОРМАЦІЇ ---
 
 // 🔥 ОНОВЛЕНА ЛОГІКА ДЛЯ ПОЛТАВИ ТА ІНШИХ JSON 🔥
-function transformToSvitloFormat(dtekRaw) {
+function transformToSvitloFormat(dtekRaw, regionId = null) {
   let daysData = null;
   if (dtekRaw?.data?.fact?.data) daysData = dtekRaw.data.fact.data;
   else if (dtekRaw?.fact?.data) daysData = dtekRaw.fact.data;
@@ -358,6 +358,7 @@ function transformToSvitloFormat(dtekRaw) {
 
   if (!daysData) return {};
 
+  const isPoltava = regionId === "poltavska-oblast" || dtekRaw?.regionId === "Poltava";
   const scheduleMap = {};
 
   for (const [timestamp, queues] of Object.entries(daysData)) {
@@ -413,8 +414,11 @@ function transformToSvitloFormat(dtekRaw) {
             // Друга половина (30-60) - це сіра зона, тому вважаємо Є (1).
             val30 = 1;
 
-            // Перша половина (00-30) залежить від попередньої години:
-            if (prevStatus === "no") {
+            if (isPoltava) {
+              // У Полтаві msecond — це гарантоване відключення у перші 30 хв (00-30),
+              // а другі 30 хв — можливе продовження (сіра зона).
+              val00 = 2;
+            } else if (prevStatus === "no") {
               // Якщо минула година була "чорна", то перші 30 хв поточної - 
               // це гарантоване продовження відключення.
               val00 = 2;
@@ -585,7 +589,7 @@ async function run() {
       await sleep(2000);
       const rawInfo = await getDtekRegionInfo(browser, config);
       if (rawInfo) {
-        const cleanSchedule = transformToSvitloFormat(rawInfo);
+        const cleanSchedule = transformToSvitloFormat(rawInfo, config.id);
         const hasSchedule = Object.keys(cleanSchedule).length > 0;
 
         // Додаємо регіон, якщо Є графік АБО Є аварійний режим
@@ -710,7 +714,7 @@ async function run() {
         continue;
       }
       const rawData = await response.json();
-      const schedule = transformToSvitloFormat(rawData);
+      const schedule = transformToSvitloFormat(rawData, region.id);
 
       if (Object.keys(schedule).length > 0) {
         console.log(`✅ Success ${region.name_en}`);
