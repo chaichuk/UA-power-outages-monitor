@@ -633,7 +633,7 @@
           }
         }
       },
-      "emergency": false
+      "emergency": true
     },
     {
       "cpu": "odeska-oblast",
