@@ -2499,7 +2499,7 @@
           }
         }
       },
-      "emergency": false
+      "emergency": true
     },
     {
       "cpu": "lvivska-oblast",
