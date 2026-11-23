@@ -1266,7 +1266,7 @@
           }
         }
       },
-      "emergency": true
+      "emergency": false
     },
     {
       "cpu": "dnipropetrovska-oblast",
